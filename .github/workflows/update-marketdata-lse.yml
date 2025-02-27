@@ -1,0 +1,337 @@
+name: 'Update Market Data: LSE'
+
+on:
+  # London Stock Exchange trading hours
+  # Pre-Market Trading:  4:05 AM - 6:50 AM UTC
+  # Regular Session:     7:00 AM - 3:30 PM UTC
+  # After-Hours Trading: 3:40 PM - 4:15 PM UTC
+  schedule:
+   - cron: '45 4-16 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: 'Start date'
+        required: true
+        type: string
+        default: '2011-12-19'
+      end_date:
+        description: 'End date'
+        required: true
+        type: string
+        default: '2025-01-31'
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    env:
+      API_URL: https://api.londonstockexchange.com/api/v1/pages?path=live-markets/market-data-dashboard/price-explorer
+      CI_COMMIT_AUTHOR: github-actions[bot]
+      CI_COMMIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+      CI_COMMIT_MESSAGE: 'Update Market Data: LSE'
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    
+    - name: Read inputs
+      run: |
+        if [ -z "${{ inputs.start_date }}" ]; then
+          START_DATE=$(date --utc +%Y/%m/%d)
+          END_DATE=$(date --utc +%Y/%m/%d)
+        else
+          START_DATE="${{ inputs.start_date }}"
+          END_DATE="${{ inputs.end_date }}"
+        fi
+        echo "START_DATE=$START_DATE" >> $GITHUB_ENV
+        echo "END_DATE=$END_DATE" >> $GITHUB_ENV
+
+    - name: Equities. Get data
+      if: ${{ github.event_name == 'schedule' }}
+      run: |
+        function get_data() {
+          sectorId="$1"
+          outputFile="$2"
+          response_code=$(curl --request GET \
+            --url "${{ env.API_URL }}&parameters=categories%253DEQUITY%2526size%253D2000%2526sectors%253D${sectorId}" \
+            --silent \
+            --write-out "%{http_code}" \
+            --output "${outputFile}")
+          if [ "${response_code}" -ne 200 ]; then
+            echo "Request failed with response code: ${response_code}"
+            exit 1
+          fi
+        }
+
+        mkdir -p "${GITHUB_WORKSPACE}/data/${START_DATE}/raw"
+        echo '{"sectors": []}' > "${GITHUB_WORKSPACE}/data/${START_DATE}/raw/lse.json"
+        
+        while IFS=$'\t' read -r sectorGroup sector sectorId; do
+          # Skip the header line
+          if [ "$sectorId" = "sectorId" ]; then
+            continue
+          fi
+          # Skip empty lines
+          [ -z "$sectorId" ] && continue
+          get_data $sectorId "lse-${sectorId}.json.TMP"
+          jq .components[0].content[1].value.content[] "lse-${sectorId}.json.TMP" > "lse-${sectorId}.json"
+          rm "lse-${sectorId}.json.TMP"
+          cp ${GITHUB_WORKSPACE}/data/${START_DATE}/raw/lse.json raw.json
+          jq --arg sectorGroup "$sectorGroup" \
+             --arg sectorName "$sector" \
+             --arg sectorId "$sectorId" \
+             --slurpfile inputJson "lse-${sectorId}.json" \
+             '.sectors += [{
+               "sectorGroup": $sectorGroup,
+               "sectorName": $sectorName,
+               "sectorId": $sectorId,
+               "equity": $inputJson
+             }]' raw.json > ${GITHUB_WORKSPACE}/data/${START_DATE}/raw/lse.json
+          rm raw.json
+          rm "lse-${sectorId}.json"
+        done < data/sectors/lse.tsv
+
+    - name: ETFs. Get data
+      if: ${{ github.event_name == 'schedule' }}
+      run: |
+        if [ ! -f "${GITHUB_WORKSPACE}/data/${START_DATE}/raw/lse.json" ]; then
+          echo '{"sectors": []}' > "${GITHUB_WORKSPACE}/data/${START_DATE}/raw/lse.json"
+        fi
+        function get_data() {
+          outputFile="$1"
+          page="$2"
+          response_code=$(curl --request GET \
+          --url "${{ env.API_URL }}&parameters=categories%253DETFS%2526size%253D2000%2526page%253D${page}" \
+          --silent \
+          --write-out "%{http_code}" \
+          --output "${outputFile}")
+          if [ "${response_code}" -ne 200 ]; then
+            echo "Request failed with response code: ${response_code}"
+            exit 1
+          fi
+        }
+        page=0
+        totalPages=10
+        until [ "$page" -gt "$(($totalPages - 1))" ]; do
+          let page=page+1
+          get_data lse-etf.json.TMP $page
+          totalPages=$( jq .components[0].content[1].value.totalPages lse-etf.json.TMP )
+          jq .components[0].content[1].value.content[] lse-etf.json.TMP > lse-etf.json
+          rm lse-etf.json.TMP
+          cp "${GITHUB_WORKSPACE}/data/${START_DATE}/raw/lse.json" raw.json
+          jq --slurpfile inputJson lse-etf.json \
+          '.sectors += [{
+            "sectorGroup": "ETFS",
+            "sectorName": "ETFS",
+            "sectorId": "",
+            "equity": $inputJson
+          }]' raw.json > "${GITHUB_WORKSPACE}/data/${START_DATE}/raw/lse.json"
+          rm raw.json
+          rm lse-etf.json
+        done
+
+    - name: Generate datafiles
+      run: |
+        function datafile_generator() {
+          data_folder="$1"
+          cd "${data_folder}"
+          jq --compact-output '{
+            "securities": {
+              "columns": [
+                "exchange",
+                "country",
+                "type",
+                "sector",
+                "industry",
+                "currencyId",
+                "ticker",
+                "nameEng",
+                "nameEngShort",
+                "nameOriginal",
+                "nameOriginalShort",
+                "priceOpen",
+                "priceLastSale",
+                "priceChangePct",
+                "volume",
+                "value",
+                "numTrades",
+                "marketCap",
+                "listedFrom",
+                "listedTill",
+                "wikiPageIdEng",
+                "wikiPageIdOriginal",
+                "nestedItemsCount"
+              ],
+              "data": [
+                # First add market total
+                (if .sectors then
+                  {
+                    marketCap: ([.sectors[]?.equity[]? | 
+                      if .marketcapitalization == null then 0
+                      elif .currency != "GBX" then 0
+                      else .marketcapitalization
+                      end
+                    ] | add),
+                    marketCapPrevious: ([.sectors[]?.equity[]? | 
+                      if .marketcapitalization == null then 0
+                      elif .currency != "GBX" then 0
+                      else .marketcapitalization / (1 + (.percentualchange // 0) / 100)
+                      end
+                    ] | add),
+                    nestedItemsCount: ([.sectors[]?.equity[]? | 
+                      .marketcapitalization
+                    ] | length)
+                  } | [
+                    "LSE",         # exchange
+                    "",            # country
+                    "sector",      # type
+                    "",            # sector
+                    "",            # industry
+                    "GBX",         # currencyId
+                    "London Stock Exchange", # ticker
+                    "London Stock Exchange", # nameEng
+                    "London Stock Exchange", # nameEngShort
+                    "London Stock Exchange", # nameOriginal
+                    "London Stock Exchange", # nameOriginalShort
+                    0,             # priceOpen
+                    0,             # priceLastSale
+                    (if .marketCapPrevious == 0 then null 
+                     else (100 * (.marketCap - .marketCapPrevious) / .marketCapPrevious)
+                    end),          # priceChangePct
+                    0,             # volume
+                    0,             # value
+                    0,             # numTrades
+                    .marketCap,    # marketCap
+                    "",            # listedFrom
+                    "",            # listedTill
+                    "",            # wikiPageIdEng
+                    "",            # wikiPageIdOriginal
+                    .nestedItemsCount # nestedItemsCount
+                  ]
+                else empty end),
+                # Then add sector summaries
+                (if .sectors then
+                  (.sectors | group_by(.sectorGroup)[] | 
+                    .[0].sectorGroup as $sector |
+                    {
+                      marketCap: ([.[].equity[]? | 
+                        if .marketcapitalization == null then 0
+                        elif .currency != "GBX" then 0
+                        else .marketcapitalization
+                        end
+                      ] | add),
+                      marketCapPrevious: ([.[].equity[]? | 
+                        if .marketcapitalization == null then 0
+                        elif .currency != "GBX" then 0
+                        else .marketcapitalization / (1 + (.percentualchange // 0) / 100)
+                        end
+                      ] | add),
+                      nestedItemsCount: ([.[].equity[]? | 
+                        .marketcapitalization
+                      ] | length)
+                    } | [
+                      "LSE",         # exchange
+                      "",            # country
+                      "sector",      # type
+                      "London Stock Exchange", # sector
+                      "",            # industry
+                      "GBX",         # currencyId
+                      $sector,       # ticker
+                      $sector,       # nameEng
+                      $sector,       # nameEngShort
+                      $sector,       # nameOriginal
+                      $sector,       # nameOriginalShort
+                      0,             # priceOpen
+                      0,             # priceLastSale
+                      (if .marketCapPrevious == 0 then 0 
+                       else (100 * (.marketCap - .marketCapPrevious) / .marketCapPrevious)
+                      end),          # priceChangePct
+                      0,             # volume
+                      0,             # value
+                      0,             # numTrades
+                      .marketCap,    # marketCap
+                      "",            # listedFrom
+                      "",            # listedTill
+                      "",            # wikiPageIdEng
+                      "",            # wikiPageIdOriginal
+                      .nestedItemsCount # nestedItemsCount
+                    ]
+                  )
+                else empty end),
+                # Finally add all individual securities
+                (if .sectors then
+                  (.sectors[]? | 
+                    .sectorGroup as $sector |
+                    .sectorName as $industry |
+                    .equity[]? | 
+                    [
+                      (if .islse then "LSE" else "" end),
+                      "",
+                      .category,
+                      $sector,
+                      $industry,
+                      .currency,
+                      .tidm,
+                      .description,
+                      .name,
+                      .description,
+                      .name,
+                      (if .lastprice == null then 0
+                      elif .netchange == null then .lastprice
+                      else (.lastprice - .netchange)
+                      end),
+                      (if .lastprice == null then 0 else .lastprice end),
+                      (if .percentualchange == null then 0 else .percentualchange end),
+                      0,
+                      0,
+                      0,
+                      (if .marketcapitalization == null then 0
+                      elif .currency != "GBX" then 0
+                      else .marketcapitalization
+                      end),
+                      "",
+                      "",
+                      "",
+                      "",
+                      0
+                    ]
+                  )
+                else empty end)
+              ]
+            }
+          }' raw/lse.json > lse.json
+        }
+        start_date="${{ env.START_DATE }}"
+        end_date="${{ env.END_DATE }}"
+        start_seconds=$(date -d "$start_date" +%s)
+        end_seconds=$(date -d "$end_date" +%s)
+
+        current_seconds=$start_seconds
+        while [ $current_seconds -le $end_seconds ]; do
+          current_date=$(date -d "@$current_seconds" +"%Y/%m/%d")
+          current_seconds=$((current_seconds + 86400))
+          data_folder=$GITHUB_WORKSPACE/data/$current_date
+          # Check if the current date is a weekend day
+          if [ $(date -d "$current_date" +%u) -ge 6 ]; then
+            continue
+          fi
+          # Check if file exists
+          if [ ! -e "${data_folder}/raw/lse.json" ]; then
+            continue
+          fi
+          # Skip empty files
+          data_items=$(jq '.sectors | length' "${data_folder}/raw/lse.json")
+          if [ "$data_items" -eq "0" ]; then
+            continue
+          fi
+          datafile_generator "$data_folder"
+        done
+        
+    - name: Commit and push
+      run: |
+        git config --global user.name "${{ env.CI_COMMIT_AUTHOR }}"
+        git config --global user.email "${{ env.CI_COMMIT_AUTHOR_EMAIL }}"
+        git add --all
+        git commit -m "${{ env.CI_COMMIT_MESSAGE }}"
+        git push origin main
