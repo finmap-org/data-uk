@@ -64,8 +64,8 @@ jobs:
           fi
         }
 
-        mkdir -p "${GITHUB_WORKSPACE}/data/${START_DATE}/raw"
-        echo '{"sectors": []}' > "${GITHUB_WORKSPACE}/data/${START_DATE}/raw/lse.json"
+        mkdir -p "${GITHUB_WORKSPACE}/marketdata/${START_DATE}/raw"
+        echo '{"sectors": []}' > "${GITHUB_WORKSPACE}/marketdata/${START_DATE}/raw/lse.json"
         
         while IFS=$'\t' read -r sectorGroup sector sectorId; do
           # Skip the header line
@@ -77,7 +77,7 @@ jobs:
           get_data $sectorId "lse-${sectorId}.json.TMP"
           jq .components[0].content[1].value.content[] "lse-${sectorId}.json.TMP" > "lse-${sectorId}.json"
           rm "lse-${sectorId}.json.TMP"
-          cp ${GITHUB_WORKSPACE}/data/${START_DATE}/raw/lse.json raw.json
+          cp ${GITHUB_WORKSPACE}/marketdata/${START_DATE}/raw/lse.json raw.json
           jq --arg sectorGroup "$sectorGroup" \
              --arg sectorName "$sector" \
              --arg sectorId "$sectorId" \
@@ -87,16 +87,16 @@ jobs:
                "sectorName": $sectorName,
                "sectorId": $sectorId,
                "equity": $inputJson
-             }]' raw.json > ${GITHUB_WORKSPACE}/data/${START_DATE}/raw/lse.json
+             }]' raw.json > ${GITHUB_WORKSPACE}/marketdata/${START_DATE}/raw/lse.json
           rm raw.json
           rm "lse-${sectorId}.json"
-        done < data/sectors/lse.tsv
+        done < sectors/lse.tsv
 
     - name: ETFs. Get data
       if: ${{ github.event_name == 'schedule' }}
       run: |
-        if [ ! -f "${GITHUB_WORKSPACE}/data/${START_DATE}/raw/lse.json" ]; then
-          echo '{"sectors": []}' > "${GITHUB_WORKSPACE}/data/${START_DATE}/raw/lse.json"
+        if [ ! -f "${GITHUB_WORKSPACE}/marketdata/${START_DATE}/raw/lse.json" ]; then
+          echo '{"sectors": []}' > "${GITHUB_WORKSPACE}/marketdata/${START_DATE}/raw/lse.json"
         fi
         function get_data() {
           outputFile="$1"
@@ -119,14 +119,14 @@ jobs:
           totalPages=$( jq .components[0].content[1].value.totalPages lse-etf.json.TMP )
           jq .components[0].content[1].value.content[] lse-etf.json.TMP > lse-etf.json
           rm lse-etf.json.TMP
-          cp "${GITHUB_WORKSPACE}/data/${START_DATE}/raw/lse.json" raw.json
+          cp "${GITHUB_WORKSPACE}/marketdata/${START_DATE}/raw/lse.json" raw.json
           jq --slurpfile inputJson lse-etf.json \
           '.sectors += [{
             "sectorGroup": "ETFS",
             "sectorName": "ETFS",
             "sectorId": "",
             "equity": $inputJson
-          }]' raw.json > "${GITHUB_WORKSPACE}/data/${START_DATE}/raw/lse.json"
+          }]' raw.json > "${GITHUB_WORKSPACE}/marketdata/${START_DATE}/raw/lse.json"
           rm raw.json
           rm lse-etf.json
         done
@@ -311,7 +311,7 @@ jobs:
         while [ $current_seconds -le $end_seconds ]; do
           current_date=$(date -d "@$current_seconds" +"%Y/%m/%d")
           current_seconds=$((current_seconds + 86400))
-          data_folder=$GITHUB_WORKSPACE/data/$current_date
+          data_folder=$GITHUB_WORKSPACE/marketdata/$current_date
           # Check if the current date is a weekend day
           if [ $(date -d "$current_date" +%u) -ge 6 ]; then
             continue
