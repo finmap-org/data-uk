@@ -59,6 +59,8 @@ jobs:
         sparse-checkout: |
           marketdata/${{ env.START_DATE }}
           marketdata/${{ env.START_DATE }}/raw
+          sectors
+          history
         sparse-checkout-cone-mode: true
 
     - name: Equities. Get data
