@@ -339,6 +339,12 @@ jobs:
           fi
           datafile_generator "$data_folder"
         done
+
+    - name: Update Histogram Datafiles
+      uses: finmap-org/actions/update-histogram-data@main
+      with:
+        start_date: ${{ env.START_DATE }}
+        end_date: ${{ env.END_DATE }}
         
     - name: Commit and push
       run: |
