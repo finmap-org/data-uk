@@ -10,15 +10,15 @@ on:
   workflow_dispatch:
     inputs:
       start_date:
-        description: 'Start date'
+        description: 'Start date, YYYY/MM/DD'
         required: true
         type: string
-        default: '2011-12-19'
+        default: '2025/02/07'
       end_date:
-        description: 'End date'
+        description: 'End date, YYYY/MM/DD'
         required: true
         type: string
-        default: '2025-01-31'
+        default: '2025/03/05'
 
 permissions:
   contents: write
